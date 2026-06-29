@@ -1,0 +1,7 @@
+# Runtime deps for the backfill tool. The core/ snapshot is the original service's
+# code, so these mirror its runtime needs (minus the Flask/gunicorn web layer, which
+# this CLI does not use).
+requests==2.31.0
+python-dotenv==1.0.1
+# Claude SDK — used by core/scoring.py for company ICP + logo scoring.
+anthropic>=0.40.0,<2.0.0
