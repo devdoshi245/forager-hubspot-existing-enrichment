@@ -86,8 +86,10 @@ def _run(object_label, iterator, enrich_fn, credits_each, execute,
 
         try:
             result = enrich_fn(str(record_id))
-            status = (result or {}).get("status")
-            if status == "skipped":
+            if isinstance(result, dict) and result.get("error"):
+                stats.failed += 1
+                logger.warning("%s %s returned error: %s", object_label, record_id, result.get("error"))
+            elif (result or {}).get("status") == "skipped":
                 stats.skipped += 1
             else:
                 stats.enriched += 1
@@ -131,14 +133,31 @@ def run_companies(execute=False, max_records=None, sleep=0.0, log_every=25) -> d
     )
 
 
+def _enrich_contact_full(contact_id: str) -> dict:
+    """Run the FULL per-contact pipeline exactly as the live contact webhook does:
+    Workflow 2 (Forager reveal of email/phone) followed by Workflow 3 (Deepline
+    work-email + phone). Workflow 3 auto-activates only when DEEPLINE_API_KEY is set,
+    identical to production — with it unset, the contact still gets the Forager reveal
+    and WF3 is a no-op.
+
+    handle_contact_webhook returns the WF2 result directly when Deepline is off, or
+    {"workflow2": ..., "workflow3": ...} when it's on. We normalise that to a single
+    dict carrying the WF2 status so the runner can tell enriched/skipped/error apart."""
+    res = enrichment.handle_contact_webhook(contact_id)
+    wf2 = res.get("workflow2", res) if isinstance(res, dict) else {}
+    if isinstance(wf2, dict) and wf2.get("error"):
+        return {"error": wf2["error"], "detail": res}
+    return {"status": (wf2 or {}).get("status"), "detail": res}
+
+
 def run_contacts(execute=False, max_records=None, max_credits=None, sleep=0.0, log_every=25) -> dict:
-    """Backfill contacts (Forager reveal of email/phone). ~CREDITS_PER_CONTACT each.
-    Workflow 3 / Deepline stays dormant unless DEEPLINE_API_KEY is set on the env —
-    this changes nothing about that gating; we call the same per-contact core path."""
+    """Backfill contacts via the full live pipeline: Forager reveal (Workflow 2) then
+    Deepline (Workflow 3). ~CREDITS_PER_CONTACT Forager credits each; Deepline provider
+    credits (BYOK) are separate and only incurred when DEEPLINE_API_KEY is configured."""
     return _run(
         "contacts",
         hubspot_list.iter_contacts(unenriched_only=True),
-        enrichment.enrich_contact,
+        _enrich_contact_full,
         credits_each=CREDITS_PER_CONTACT,
         execute=execute, max_records=max_records, max_credits=max_credits,
         sleep=sleep, log_every=log_every,

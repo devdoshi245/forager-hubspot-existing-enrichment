@@ -22,8 +22,12 @@ snapshot** in [`core/`](./core) — see [CORE_SNAPSHOT.md](./CORE_SNAPSHOT.md).
    *resumable* — re-running just continues with what's left.)
 3. **Enriches the rest** — runs the exact same per-record logic the live service uses:
    * **Companies:** firmographics (Forager) + Claude ICP/logo scoring + Tier 1/2.
-     No new contacts are created. ~0 Forager credits (Claude usage applies).
-   * **Contacts:** reveals email + phone from Forager. ~25 Forager credits each.
+     No new contacts are created. ~0 Forager credits (Claude usage applies; needs
+     `ANTHROPIC_API_KEY`).
+   * **Contacts:** the full live pipeline — Forager reveal of email/phone
+     (Workflow 2) **then** Deepline work-email + phone (Workflow 3). ~25 Forager
+     credits each; Deepline runs only when `DEEPLINE_API_KEY` is set (otherwise the
+     contact still gets the Forager reveal and the Deepline step is skipped).
 4. **Stops safely** — when a record cap, a credit cap, or a Forager "out of credits"
    (HTTP 402) is hit.
 
@@ -42,6 +46,7 @@ python -m bulk.cli run companies
 python -m bulk.cli run contacts
 
 # 3) Execute (spends credits) — always start small and capped
+python -m bulk.cli run contacts  --execute --max-records 5      # <-- recommended FIRST test (5 contacts)
 python -m bulk.cli run companies --execute --max-records 50
 python -m bulk.cli run contacts  --execute --max-credits 5000
 python -m bulk.cli run contacts  --execute --max-records 100 --sleep 0.5
@@ -62,10 +67,11 @@ Needs the **same credentials as the live service** (copy `.env.example` → `.en
 set them in the Railway job env):
 
 - **Required:** `FORAGER_API_KEY`, `FORAGER_ACCOUNT_ID`, `HUBSPOT_TOKEN`
-- **For company scoring:** `ANTHROPIC_API_KEY` (without it, companies still get
-  firmographics but skip ICP/logo/Tier)
-- **Leave `DEEPLINE_API_KEY` UNSET** here — keeps Deepline dormant; the contact
-  backfill is Forager-reveal only.
+- **For company scoring (ICP + logo + Tier):** `ANTHROPIC_API_KEY` (without it,
+  companies still get firmographics but skip scoring)
+- **For the Deepline step on contacts:** `DEEPLINE_API_KEY` (+ the per-provider BYOK
+  keys and credits configured in the Deepline dashboard). If unset, contacts still get
+  the Forager reveal and the Deepline step is simply skipped.
 
 ---
 

@@ -89,9 +89,9 @@ def test_dry_run_does_not_call_core(monkeypatch):
                         lambda **k: iter([_contact(i) for i in range(1, 6)]))
 
     def _boom(_id):
-        raise AssertionError("enrich_contact must NOT be called in a dry-run")
+        raise AssertionError("handle_contact_webhook must NOT be called in a dry-run")
 
-    monkeypatch.setattr(runner.enrichment, "enrich_contact", _boom)
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook", _boom)
     out = runner.run_contacts(execute=False)
     assert out["mode"] == "dry-run"
     assert out["processed"] == 5
@@ -106,7 +106,7 @@ def test_max_records_stops_run(monkeypatch):
     calls = []
     monkeypatch.setattr(runner.hubspot_list, "iter_contacts",
                         lambda **k: iter([_contact(i) for i in range(1, 101)]))
-    monkeypatch.setattr(runner.enrichment, "enrich_contact",
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook",
                         lambda cid: calls.append(cid) or {"status": "enriched"})
     out = runner.run_contacts(execute=True, max_records=10)
     assert out["processed"] == 10
@@ -117,7 +117,7 @@ def test_max_records_stops_run(monkeypatch):
 def test_max_credits_stops_run(monkeypatch):
     monkeypatch.setattr(runner.hubspot_list, "iter_contacts",
                         lambda **k: iter([_contact(i) for i in range(1, 101)]))
-    monkeypatch.setattr(runner.enrichment, "enrich_contact", lambda cid: {"status": "enriched"})
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook", lambda cid: {"status": "enriched"})
     # Budget = 60 credits, 25 per contact -> room for 2 (3rd would exceed 60).
     out = runner.run_contacts(execute=True, max_credits=60)
     assert out["enriched"] == 2
@@ -141,7 +141,7 @@ def test_402_stops_run(monkeypatch):
             raise err
         return {"status": "enriched"}
 
-    monkeypatch.setattr(runner.enrichment, "enrich_contact", _enrich)
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook", _enrich)
     out = runner.run_contacts(execute=True)
     assert "402" in out["stop_reason"]
     assert out["enriched"] == 2          # ids 1 and 2 succeeded before the 402 on 3
@@ -158,7 +158,7 @@ def test_skipped_not_counted_as_credits(monkeypatch):
     def _enrich(cid):
         return {"status": "skipped"} if cid in ("2", "4") else {"status": "enriched"}
 
-    monkeypatch.setattr(runner.enrichment, "enrich_contact", _enrich)
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook", _enrich)
     out = runner.run_contacts(execute=True)
     assert out["enriched"] == 3
     assert out["skipped"] == 2
@@ -175,3 +175,22 @@ def test_companies_zero_credits(monkeypatch):
     out = runner.run_companies(execute=True)
     assert out["enriched"] == 5
     assert out["estimated_forager_credits_spent"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Runner: handles the Deepline-ON nested return ({"workflow2":..,"workflow3":..})
+# --------------------------------------------------------------------------- #
+def test_contact_nested_deepline_shape(monkeypatch):
+    monkeypatch.setattr(runner.hubspot_list, "iter_contacts",
+                        lambda **k: iter([_contact(i) for i in range(1, 5)]))
+
+    def _wf(cid):
+        # Mimic handle_contact_webhook when DEEPLINE_API_KEY is set: nested result.
+        status = "skipped" if cid == "2" else "enriched"
+        return {"workflow2": {"status": status}, "workflow3": {"status": "deepline_enriched"}}
+
+    monkeypatch.setattr(runner.enrichment, "handle_contact_webhook", _wf)
+    out = runner.run_contacts(execute=True)
+    assert out["enriched"] == 3          # ids 1,3,4
+    assert out["skipped"] == 1           # id 2 (WF2 skip read from the nested shape)
+    assert out["estimated_forager_credits_spent"] == 3 * estimate.CREDITS_PER_CONTACT

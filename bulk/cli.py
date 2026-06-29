@@ -12,8 +12,9 @@ Usage (nothing spends credits unless you add --execute):
   python -m bulk.cli run companies                         # dry-run (default)
   python -m bulk.cli run companies --execute --max-records 50
 
-  # Backfill contacts (Forager email/phone reveal). ~25 Forager credits each.
+  # Backfill contacts: Forager reveal (WF2) then Deepline (WF3). ~25 Forager credits each.
   python -m bulk.cli run contacts                          # dry-run (default)
+  python -m bulk.cli run contacts --execute --max-records 5     # recommended FIRST test
   python -m bulk.cli run contacts --execute --max-credits 5000
   python -m bulk.cli run contacts --execute --max-records 100 --sleep 0.5
 
