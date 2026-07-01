@@ -32,7 +32,7 @@ _PAGE_LIMIT = 100
 
 # Only the properties we need to decide "already enriched?" — keeps payloads small.
 _COMPANY_PROPS = ["domain", "name", "forager_org_id", "icp_match_score"]
-_CONTACT_PROPS = ["firstname", "lastname", "forager_person_id", "forager_enriched", "email"]
+_CONTACT_PROPS = ["firstname", "lastname", "forager_person_id", "forager_enriched", "deepline_enriched", "email"]
 
 
 def _headers() -> dict:
@@ -72,8 +72,16 @@ def company_is_enriched(props: dict) -> bool:
 
 
 def contact_is_enriched(props: dict) -> bool:
-    """A contact we've already revealed (and paid for) is stamped forager_enriched."""
-    return (props.get("forager_enriched") or "").strip().lower() == "true"
+    """A contact is "done" once the pipeline has run on it — either the Forager reveal
+    stamped forager_enriched, OR Deepline stamped deepline_enriched. Counting the
+    Deepline flag too means contacts the Forager reveal SKIPPED (e.g. no LinkedIn URL)
+    but Deepline already processed are not handed back on every run — otherwise they
+    silently eat the run's record cap forever. Deepline sets deepline_enriched on every
+    contact it finishes, so this reliably retires completed records from future passes."""
+    return (
+        (props.get("forager_enriched") or "").strip().lower() == "true"
+        or (props.get("deepline_enriched") or "").strip().lower() == "true"
+    )
 
 
 # ---------------------------------------------------------------------------
