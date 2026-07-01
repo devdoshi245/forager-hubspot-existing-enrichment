@@ -674,10 +674,14 @@ def workflow3_deepline(hubspot_contact_id: str) -> dict:
         "email": id_email,  # a known email helps (and can UNLOCK) phone/email lookups
         "country": (props.get("country") or "").strip(),  # drives the region-specific phone waterfall
     }
-    # Deepline is the FALLBACK after Forager: if Forager already put a work email in the
-    # built-in `email` field (or a phone in `phone`), skip that waterfall ENTIRELY — don't
-    # even look it up (saves provider credits). Per Shirish's call.
-    has_work_email = bool(work_email)
+    # Deepline is the FALLBACK after Forager. Skip the email waterfall ONLY when the
+    # `email` field already holds a real WORK email (a company-domain address). On the
+    # backfill, an existing contact's `email` field often holds a PERSONAL address
+    # (gmail/outlook) — that is NOT a work email, so we still run Deepline to find the
+    # real one. (In prod the `email` field is always a work email, so this is a no-op
+    # there: a non-freemail address keeps has_work_email True exactly as before.)
+    existing_email_is_personal = bool(work_email) and _is_freemail(_domain_from_email(work_email))
+    has_work_email = bool(work_email) and not existing_email_is_personal
     has_phone = bool((props.get("phone") or "").strip())
 
     # Run the (needed) waterfalls in parallel (each is independent and I/O-bound).
@@ -691,7 +695,21 @@ def workflow3_deepline(hubspot_contact_id: str) -> dict:
 
     update: dict = {"deepline_enriched": "true"}
     if email_res.get("value"):
-        update["email"] = email_res["value"]  # work email -> built-in Email field
+        found_work = email_res["value"]
+        update["email"] = found_work  # the work email ALWAYS goes to the built-in Email field
+        # If the `email` field was holding a PERSONAL address, don't lose it to the
+        # overwrite: slide it into Email Home when Home is free. If Home is already
+        # taken, keep Home as-is and log that this one personal address couldn't be
+        # preserved (rare) rather than silently dropping it.
+        if existing_email_is_personal:
+            if not personal_email:
+                update["migrated_emails_home"] = work_email
+            else:
+                logger.warning(
+                    "Contact %s: found work email %s but Email Home already holds %s; "
+                    "the personal address %s in the email field was replaced.",
+                    hubspot_contact_id, found_work, personal_email, work_email,
+                )
         if (email_res.get("meta") or {}).get("smtp_provider"):
             update["email_smtp_provider"] = email_res["meta"]["smtp_provider"]
     if phone_res.get("value"):
