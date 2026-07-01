@@ -586,6 +586,29 @@ def handle_company_webhook(hubspot_company_id: str, job_title_filter: str | None
     }
 
 
+# Free/personal mailbox providers whose domain is the person's, NOT their company's —
+# so we must NOT treat them as a company domain when deriving one from an email.
+_FREEMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk", "yahoo.co.in",
+    "ymail.com", "rocketmail.com", "hotmail.com", "hotmail.co.uk", "outlook.com",
+    "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com",
+    "protonmail.com", "proton.me", "pm.me", "gmx.com", "gmx.net", "mail.com",
+    "zoho.com", "yandex.com", "hey.com", "fastmail.com", "qq.com", "163.com", "126.com",
+}
+
+
+def _domain_from_email(email: str | None) -> str:
+    """The normalized domain part of an email ('' if it isn't a valid-looking email)."""
+    if not email or "@" not in email:
+        return ""
+    return forager.normalize_domain(email.rsplit("@", 1)[1])
+
+
+def _is_freemail(domain: str) -> bool:
+    """True for free/personal mailbox domains that are NOT a company domain."""
+    return (domain or "").lower().strip() in _FREEMAIL_DOMAINS
+
+
 def workflow3_deepline(hubspot_contact_id: str) -> dict:
     """Workflow 3 — Deepline work-email + phone enrichment for one contact.
 
@@ -623,20 +646,38 @@ def workflow3_deepline(hubspot_contact_id: str) -> dict:
 
     first = (props.get("firstname") or "").strip()
     last = (props.get("lastname") or "").strip()
+    work_email = (props.get("email") or "").strip()
+    personal_email = (props.get("migrated_emails_home") or "").strip()
+
+    # A known email is a DIRECT identifier every provider accepts, and its domain IS the
+    # company domain. Old backfill contacts often have an email but an empty
+    # company_domain field, so a name-only lookup gets rejected (422 "provide a name PLUS
+    # company/domain") even though we could supply both. So: hand the providers whatever
+    # email we have, and when company_domain is blank, derive the domain from a real
+    # (non-freemail) email address. This rescues those name-only contacts.
+    id_email = personal_email or work_email
+    domain = forager.normalize_domain(props.get("company_domain") or "")
+    if not domain:
+        for cand in (work_email, personal_email):
+            d = _domain_from_email(cand)
+            if d and not _is_freemail(d):
+                domain = d
+                break
+
     inp = {
         "first_name": first,
         "last_name": last,
         "full_name": f"{first} {last}".strip(),
-        "domain": forager.normalize_domain(props.get("company_domain") or ""),
+        "domain": domain,
         "company_name": (props.get("company") or "").strip(),
         "linkedin_url": (props.get("linkedin_url") or props.get("hs_linkedin_url") or "").strip(),
-        "email": (props.get("migrated_emails_home") or "").strip(),  # personal email helps phone lookups
+        "email": id_email,  # a known email helps (and can UNLOCK) phone/email lookups
         "country": (props.get("country") or "").strip(),  # drives the region-specific phone waterfall
     }
     # Deepline is the FALLBACK after Forager: if Forager already put a work email in the
     # built-in `email` field (or a phone in `phone`), skip that waterfall ENTIRELY — don't
     # even look it up (saves provider credits). Per Shirish's call.
-    has_work_email = bool((props.get("email") or "").strip())
+    has_work_email = bool(work_email)
     has_phone = bool((props.get("phone") or "").strip())
 
     # Run the (needed) waterfalls in parallel (each is independent and I/O-bound).
