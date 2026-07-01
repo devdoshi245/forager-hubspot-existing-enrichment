@@ -151,6 +151,23 @@ def _invalid_property_names(error_json: dict, candidates: dict) -> list[str]:
     return [c for c in candidates if c in flagged]
 
 
+def _is_duplicate_email_error(error_json: dict) -> bool:
+    """Does this 400 body describe a unique-email collision (vs a bad property)?
+
+    HubSpot returns the "Contact already exists" conflict as a 400 with
+    category PROPERTY_DOESNT_EXIST/VALIDATION_ERROR varying by API surface, so we
+    match on the message text rather than the category."""
+    if not isinstance(error_json, dict):
+        return False
+    text = " ".join(
+        str(error_json.get(k, "")) for k in ("message", "category")
+    ).lower()
+    if "already exists" in text or "already has the value" in text:
+        return True
+    # Some surfaces only say "contact" + "duplicate"; require the email signal too.
+    return "duplicate" in text and "email" in text
+
+
 def _write_with_retry(method: str, url: str, properties: dict) -> dict:
     """PATCH/POST properties, dropping any property HubSpot rejects, then retry."""
     clean = _clean(properties)
@@ -158,11 +175,20 @@ def _write_with_retry(method: str, url: str, properties: dict) -> dict:
     for _ in range(len(clean) + 1):
         resp = func(url, json={"properties": clean}, headers=_headers(), timeout=30)
         if resp.status_code == 400 and clean:
-            offending = _invalid_property_names(resp.json() if resp.content else {}, clean)
+            body = resp.json() if resp.content else {}
+            offending = _invalid_property_names(body, clean)
             if offending:
                 for name in offending:
                     clean.pop(name, None)
                 logger.warning("HubSpot rejected properties %s; retrying without them", offending)
+                if clean:
+                    continue
+            # HubSpot also reports a unique-email collision as 400 (not just 409),
+            # e.g. when the same person is discovered under two titles in one run and
+            # we try to write `email` twice. Same recovery as the 409 path below.
+            elif clean.get("email") and _is_duplicate_email_error(body):
+                logger.warning("HubSpot 400 duplicate email=%r; retrying without `email`", clean.get("email"))
+                clean.pop("email", None)
                 if clean:
                     continue
         # 409 = unique-property conflict (almost always `email` already on another
